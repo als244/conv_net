@@ -338,11 +338,11 @@ int main(void)
     else if (i < 4){
       learning_rate_sched[i] = .001;
     }
-    else if (i < 10){
-      learning_rate_sched[i] = .0001;
+    else if (i < 8){
+      learning_rate_sched[i] = .0005;
     }
-    else if (i < 18){
-      learning_rate_sched[i] = .00001;
+    else if (i < 16){
+      learning_rate_sched[i] = .0001;
     }
     else{
       learning_rate_sched[i] = .00005;
