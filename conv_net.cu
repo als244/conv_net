@@ -325,7 +325,7 @@ int main(void)
   int batch_size = 1;
   // how many times to repeat dataset
   int repeat_n = 23;
-  float learning_rate = .001;
+  float learning_rate = .0001;
 
   int input_len = 257;
   int output_len = 10;
@@ -463,9 +463,9 @@ int main(void)
 
   // uniform random weights between +/ (24 / (# inputs to unit which connection belongs))
   float conv_init_bound = 1;
-  float conv2_init_bound = 2.0 / 3;
-  float h3_init_bound = 1 / 4.0;
-  float out_init_bound = 1 / 2.0;
+  float conv2_init_bound = 1;
+  float h3_init_bound = 1;
+  float out_init_bound = 1;
   for (int i = 0; i < W_h1_size; i++){
     // 50/50 for sign, then [0, 24/25]
     W_h1_host[i] = (2 * (rand() % 2) - 1) * (float)rand()/(float)(RAND_MAX/conv_init_bound);
