@@ -14,6 +14,7 @@
 #define MAX_THREAD_PER_BLOCK 1024
 
 
+
 // matrix set zero is same as vector zero, (flatten to 1D)
 __global__  void setZero(int size, float *A){
   int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -84,7 +85,9 @@ __global__  void activationDeriv(int size, float *gradient, float *nodes, float 
   
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < size){
-      out[i] = gradient[i] * (1 - (nodes[i] * nodes[i]));
+      float TANH_FREQ = 2.0 / 3.0;
+      float TANH_AMP = 1.7159;
+      out[i] = gradient[i] * (1 - (nodes[i] * nodes[i])) * TANH_FREQ * TANH_AMP;
   }
 }
 
@@ -159,8 +162,10 @@ __global__  void addBiasAndActivate(int size, int width, float *X, float *B){
   float z;
   if (i < size){
     X[width * rowInd + colInd] += B[rowInd];
-    z = X[width * rowInd + colInd];
-    X[width * rowInd + colInd] = (__expf(z) - __expf(-z)) / (__expf(z) + __expf(-z));
+    float TANH_FREQ = 2.0 / 3.0;
+    float TANH_AMP = 1.7159;
+    z = TANH_FREQ * X[width * rowInd + colInd];
+    X[width * rowInd + colInd] = TANH_AMP * (__expf(z) - __expf(-z)) / (__expf(z) + __expf(-z));
   }
 }
 
@@ -325,7 +330,7 @@ int main(void)
   int batch_size = 1;
   // how many times to repeat dataset
   int repeat_n = 23;
-  float learning_rate = .0001;
+  float learning_rate = .001;
 
   int input_len = 257;
   int output_len = 10;
@@ -462,10 +467,10 @@ int main(void)
   // initalize weights and biases
 
   // uniform random weights between +/ (24 / (# inputs to unit which connection belongs))
-  float conv_init_bound = 1;
-  float conv2_init_bound = 1;
-  float h3_init_bound = 1;
-  float out_init_bound = 1;
+  float conv_init_bound = 2.4 / 25;
+  float conv2_init_bound = 2.4 / 25;
+  float h3_init_bound = 2.4 / 192;
+  float out_init_bound = 2.4 / 30;
   for (int i = 0; i < W_h1_size; i++){
     // 50/50 for sign, then [0, 24/25]
     W_h1_host[i] = (2 * (rand() % 2) - 1) * (float)rand()/(float)(RAND_MAX/conv_init_bound);
