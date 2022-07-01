@@ -31,10 +31,6 @@ __global__  void setRowVal(int width, int rowInd, float *A, float val){
   }
 }
 
-
-
-
-
 // matrix add is same as vector add, flatten to 1D
 __global__  void matAdd(int size, float *A, float *B, float *out){
 
@@ -82,23 +78,23 @@ __global__  void computeLoss(int size, int output_len, float *X, float *Y, float
 }
 
 
-
-// hadamard(gradient, (hadamard(nodes, 1 - nodes)))
+// for sigmoid: hadamard(gradient, (hadamard(nodes, 1 - nodes)))
+// for tanh: 1 - f(x) ^ 2
 __global__  void activationDeriv(int size, float *gradient, float *nodes, float *out){
   
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < size){
-      out[i] = gradient[i] * (nodes[i] * (1 - nodes[i]));
+      out[i] = gradient[i] * (1 - (nodes[i] * nodes[i]));
   }
 }
 
 
-// hadamard(gradient, (hadamard(nodes, 1 - nodes)))
+
 // size is size of output (# of bias derivs); width is width of input matrix (batch size)
 __global__  void biasDerivs(int size, int width, float *node_derivs, float *out){
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   if (i < size){
-      float sum;
+      float sum = 0;
       for (int j = 0; j < width; j++){
         sum += node_derivs[width * i + j];
       }
@@ -106,6 +102,22 @@ __global__  void biasDerivs(int size, int width, float *node_derivs, float *out)
   }
 }
 
+
+// ASSUME BLOCK + THREAD ARE 1-D
+// size is batch size
+// one thread per sample in batch
+__global__ void softMax(int size, int output_len, float*X){
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i < size){
+    float sum = 0;
+    for (int j = 0; j < output_len; j++){
+      sum += __expf(X[i + size * j]);
+    }
+    for (int j = 0; j < output_len; j++){
+      X[i + size * j] = __expf(X[i + size * j]) / sum;
+    }
+  }
+}
 
 // ASSUME BLOCK + THREAD ARE 1-D
 // can work with vectors as well
@@ -121,6 +133,21 @@ __global__ void transposeSimp(int size, int width, float * M, float *out){
   }
 }
 
+
+
+// ASSUME BLOCK + THREAD ARE 1-D
+// can work with vectors as well
+// size is total number of elements (nRows * nCols), width = nCols
+__global__  void addBias(int size, int width, float *X, float *B){
+  
+  int i = blockDim.x * blockIdx.x + threadIdx.x;
+  int rowInd = i / width;
+  int colInd = i % width;
+  if (i < size){
+    X[width * rowInd + colInd] = X[width * rowInd + colInd] + B[rowInd];
+  }
+}
+
 // ASSUME BLOCK + THREAD ARE 1-D
 // can work with vectors as well
 // size is total number of elements (nRows * nCols), width = nCols
@@ -129,11 +156,32 @@ __global__  void addBiasAndActivate(int size, int width, float *X, float *B){
   int i = blockDim.x * blockIdx.x + threadIdx.x;
   int rowInd = i / width;
   int colInd = i % width;
+  float z;
   if (i < size){
-    X[width * rowInd + colInd] = 1 / (1 + __expf(X[width * rowInd + colInd] + B[rowInd]));
+    X[width * rowInd + colInd] += B[rowInd];
+    z = X[width * rowInd + colInd];
+    X[width * rowInd + colInd] = (__expf(z) - __expf(-z)) / (__expf(z) + __expf(-z));
   }
 }
 
+
+__global__  void makePredict(int size, int output_len, float *X, float *out){
+  
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  float pred_val = -1;
+  float pred_ind = -1;
+  float val;
+  if (i < size){
+    for (int j = 0; j < output_len; j++){
+      val = X[i + j * size];
+      if (val > pred_val) {
+        pred_val = val;
+        pred_ind = j;
+      }
+    }
+    out[i] = pred_ind;
+  }
+}
 
 
 // ASSUME BLOCK + THREAD ARE BOTH 1-D
@@ -274,10 +322,10 @@ int main(void)
   // DEFINE ARCHITECURAL PARAMTERS FOR NEURAL NET 
 
   // mini batch size
-  int batch_size = 200;
+  int batch_size = 1;
   // how many times to repeat dataset
-  int repeat_n = 30;
-  float learning_rate = 0.001;
+  int repeat_n = 23;
+  float learning_rate = .001;
 
   int input_len = 257;
   int output_len = 10;
@@ -367,6 +415,10 @@ int main(void)
   float *loss_host;
   loss_host = (float *)malloc(batch_size * sizeof(float));
 
+  // predicted values
+  float *predicted_host;
+  predicted_host = (float*)malloc(batch_size *sizeof(float));
+
 
   // create mappings between indicies of duplicated weight matrix (full) and indicies unique weight vector 
 
@@ -410,15 +462,16 @@ int main(void)
   // initalize weights and biases
 
   // uniform random weights between +/ (24 / (# inputs to unit which connection belongs))
-  float conv_init_bound = 24.0 / 25.0;
-  float h3_init_bound = 24.0 / 192.0;
-  float out_init_bound = 24.0 / 30.0;
+  float conv_init_bound = 1;
+  float conv2_init_bound = 2.0 / 3;
+  float h3_init_bound = 1 / 4.0;
+  float out_init_bound = 1 / 2.0;
   for (int i = 0; i < W_h1_size; i++){
     // 50/50 for sign, then [0, 24/25]
     W_h1_host[i] = (2 * (rand() % 2) - 1) * (float)rand()/(float)(RAND_MAX/conv_init_bound);
   }
   for (int i = 0; i < W_h2_size; i++){
-    W_h2_host[i] = (2 * (rand() % 2) - 1) * (float)rand()/(float)(RAND_MAX/conv_init_bound);
+    W_h2_host[i] = (2 * (rand() % 2) - 1) * (float)rand()/(float)(RAND_MAX/conv2_init_bound);
   }
   for (int i = 0; i < W_h3_size; i++){
     W_h3_host[i] = (2 * (rand() % 2) - 1) * (float)rand()/(float)(RAND_MAX/h3_init_bound);
@@ -452,9 +505,6 @@ int main(void)
   for (int i=0; i < output_len; i++){
     B_out_host[i] = 0;
   }
-
-
-
 
   // READ FROM DATASET!!!!
   FILE * training_images_file, *training_labels_file;
@@ -544,7 +594,8 @@ int main(void)
       }
     }
   }
-  free(training_labels_raw);
+
+  
 
 
   // GPU variables
@@ -577,6 +628,9 @@ int main(void)
 
   // loss per sample
   float *loss;
+
+  // predicted values
+  float *predicted;
 
   // ALLOCATE GPU MEMORY
 
@@ -656,6 +710,8 @@ int main(void)
   // allocate space to store values for loss function per sample
   cudaMalloc(&loss, batch_size * sizeof(float));
 
+  cudaMalloc(&predicted, batch_size * sizeof(float));
+
 
   // COPY VALUES FROM CPU
 
@@ -704,12 +760,17 @@ int main(void)
   // TRAINNNNNN
 
   int n_batches = training_n / batch_size;
-  for (int cnt = 0; cnt < repeat_n; cnt++){  
-    for (int batch_i = 0; batch_i < n_batches; batch_i++){
-        // get new batch
+  for (int cnt = 0; cnt < repeat_n; cnt++){
+    float totalLoss = 0;
+    float n_wrong = 0;
 
-        printf("\nDataset Iteration: %i, Working on Batch: %i\n\n", cnt, batch_i);
-        
+    printf("\nDataset Iteration: %i\n\n", cnt);
+    for (int batch_i = 0; batch_i < n_batches; batch_i++){
+
+        if (batch_i % 1000 == 0){
+          printf("Batch #: %d\n", batch_i);
+        }
+        // get new batch
         memcpy(X_in_host, training_images + batch_i * batch_size * input_len, batch_size * input_len * sizeof(float));
         memcpy(Y_out_host, training_labels + batch_i * batch_size * output_len, batch_size * output_len * sizeof(float));
         // read in as consective images (so pixels are rows). want to transpose, then send back to host
@@ -721,16 +782,16 @@ int main(void)
         transposeSimp<<< SM_COUNT, ceil((float)output_len * batch_size / SM_COUNT)>>> (output_len * batch_size, output_len, Y_out_T, Y_out);
         cudaMemcpy(Y_out_host, Y_out, output_len *batch_size* sizeof(float), cudaMemcpyDeviceToHost);
 
+        
+        // FORWARD PASS
 
-          // FORWARD PASS
-
-          /// (769, 257) x (257, 2000)
+        /// (769, 257) x (257, 2000)
         cudaMemcpy(W_h1_host, W_h1, W_h1_size * sizeof(float), cudaMemcpyDeviceToHost);
         cudaMemcpy(W_h1_full_host, W_h1_full, W_h1_full_size * sizeof(float), cudaMemcpyDeviceToHost);
 
         matMulSimp<<< SM_COUNT, ceil((float)h1_size * batch_size / SM_COUNT) >>>(h1_size, input_len, batch_size, W_h1_full, X_in, X_h1);
-          // set constant of -1 to last val in h1 for all samples in batch
         addBiasAndActivate <<< SM_COUNT, ceil((float)h1_size * batch_size / SM_COUNT) >>>(h1_size * batch_size, batch_size, X_h1, B_h1);
+        // set constant of -1 to last val in h1 for all samples in batch
         setRowVal<<< SM_COUNT, ceil((float)batch_size / SM_COUNT)>>> (batch_size, h1_size - 1, X_h1, -1.0);
 
         cudaMemcpy(X_h1_host, X_h1, h1_size * batch_size * sizeof(float), cudaMemcpyDeviceToHost);
@@ -760,29 +821,32 @@ int main(void)
 
 
         matMulSimp<<< SM_COUNT, ceil((float)output_len * batch_size / SM_COUNT)>>>(output_len, h3_size, batch_size, W_out, X_h3, X_out);
-        addBiasAndActivate <<< SM_COUNT, ceil((float)output_len * batch_size / SM_COUNT)>>> (output_len * batch_size, batch_size, X_out, B_out);
+        
+        addBias <<< SM_COUNT, ceil((float)output_len * batch_size / SM_COUNT)>>> (output_len * batch_size, batch_size, X_out, B_out);
+        softMax <<< SM_COUNT, ceil((float)batch_size / SM_COUNT) >>> (batch_size, output_len, X_out);
 
         cudaMemcpy(X_out_host, X_out, output_len * batch_size * sizeof(float), cudaMemcpyDeviceToHost);
-
-
-
-
-        
 
         // COMPUTE LOSS 
         // average loss per sample in batch...
         // not optimized...
         computeLoss <<< SM_COUNT, ceil((float)batch_size / SM_COUNT)>>> (batch_size, output_len, X_out, Y_out, loss);
         cudaMemcpy(loss_host, loss, batch_size * sizeof(float), cudaMemcpyDeviceToHost);
-        float totalLoss = 0;
         for (int i = 0; i < batch_size; i++){
           totalLoss += loss_host[i];
         }
-        printf("Total Loss for Batch: %f\n", totalLoss);
-        printf("Average Loss per Sample: %f\n", totalLoss / batch_size);
 
+        makePredict <<< SM_COUNT, ceil((float)batch_size / SM_COUNT)>>> (batch_size, output_len, X_out, predicted);
 
-          // BACK PROP => want dW_out, dW_h3, dW_h2, dW_h1 + dB_out, dB_h3, dB_h2, dB_h1
+        cudaMemcpy(predicted_host, predicted, batch_size * sizeof(float), cudaMemcpyDeviceToHost);
+        for (int i = 0; i < batch_size; i++){
+          if (predicted_host[i] != training_labels_raw[batch_i * batch_size + i]){
+            n_wrong++;
+          }
+        }
+        
+        
+        // BACK PROP => want dW_out, dW_h3, dW_h2, dW_h1 + dB_out, dB_h3, dB_h2, dB_h1
 
           // compute dX_out
         // already accounting for flipped sign (X_out - Y_out => want to add gradients because loss deriv multiplied by -1)
@@ -889,7 +953,7 @@ int main(void)
 
           /// DEBUG STUFF....
 
-        if (batch_i == -1){
+        if (batch_i == n_batches - 1){
           printf("\nBatch #: %d\n", batch_i);
 
           printf("\n\nX_in MATRIX:\n\n");
@@ -922,6 +986,11 @@ int main(void)
             printf("%f ", X_h1_host[i]);
           }
 
+          printf("\n\nW_h2 values:\n\n");
+          for (int i = 0; i < W_h2_size; i++){
+            printf("%f\n", W_h2_host[i]);
+          }
+
           printf("\n\nX_h2 MATRIX:\n\n");
           for (int i = 0; i < h2_size * batch_size; i++){
             if ((i % batch_size) == 0) {
@@ -930,13 +999,13 @@ int main(void)
             printf("%f ", X_h2_host[i]);
           }
 
-          // printf("\n\nW_h3 MATRIX:\n\n");
-          // for (int i = 0; i < W_h3_size; i++){
-          //   if ((i % h2_size) == 0) {
-          //     printf("\n");
-          //   }
-          //   printf("%f ", W_h3_host[i]);
-          // }
+          printf("\n\nW_h3 MATRIX:\n\n");
+          for (int i = 0; i < W_h3_size; i++){
+            if ((i % h2_size) == 0) {
+              printf("\n");
+            }
+            printf("%f ", W_h3_host[i]);
+          }
           
           printf("\n\nX_h3 MATRIX:\n\n");
           for (int i = 0; i < h3_size * batch_size; i++){
@@ -954,11 +1023,11 @@ int main(void)
             printf("%f ", W_out_host[i]);
           }
 
-
+          printf("\n\n Iteration #: %d\n\n", cnt);
           printf("\n\nX OUT MATRIX:\n\n");
           for (int i = 0; i < output_len * batch_size; i++){
             if ((i % batch_size) == 0) {
-              printf("\n");
+              printf("\n\n");
             }
             printf("%f ", X_out_host[i]);
           }
@@ -1012,6 +1081,7 @@ int main(void)
             printf("%f ", dW_out_host[i]);
           }
 
+
           printf("\n\n\n");
 
         }
@@ -1025,17 +1095,17 @@ int main(void)
           // UPDATE WEIGHTS + BIASES (apply learning rate and add gradients to existing params)
 
           // apply learning rate to gradients, and reverse direction
-        matScale <<< SM_COUNT, ceil((float)W_out_size / SM_COUNT)>>>(W_out_size, dW_out, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)W_h3_size / SM_COUNT)>>>(W_h3_size, dW_h3, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)W_h2_full_size / SM_COUNT)>>>(W_h2_full_size, dW_h2_full, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)W_h2_size / SM_COUNT)>>>(W_h2_size, dW_h2, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)W_h1_full_size / SM_COUNT)>>>(W_h1_full_size, dW_h1_full, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)W_h1_size / SM_COUNT)>>>(W_h1_size, dW_h1, learning_rate);
+        matScale <<< SM_COUNT, ceil((float)W_out_size / SM_COUNT)>>>(W_out_size, dW_out, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)W_h3_size / SM_COUNT)>>>(W_h3_size, dW_h3, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)W_h2_full_size / SM_COUNT)>>>(W_h2_full_size, dW_h2_full, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)W_h2_size / SM_COUNT)>>>(W_h2_size, dW_h2, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)W_h1_full_size / SM_COUNT)>>>(W_h1_full_size, dW_h1_full, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)W_h1_size / SM_COUNT)>>>(W_h1_size, dW_h1, -learning_rate);
 
-        matScale <<< SM_COUNT, ceil((float)output_len / SM_COUNT)>>>(output_len, dB_out, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)h3_size / SM_COUNT)>>>(h3_size, dB_h3, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)h2_size / SM_COUNT)>>>(h2_size, dB_h2, learning_rate);
-        matScale <<< SM_COUNT, ceil((float)h1_size / SM_COUNT)>>>(h1_size, dB_h1, learning_rate);
+        matScale <<< SM_COUNT, ceil((float)output_len / SM_COUNT)>>>(output_len, dB_out, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)h3_size / SM_COUNT)>>>(h3_size, dB_h3, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)h2_size / SM_COUNT)>>>(h2_size, dB_h2, -learning_rate);
+        matScale <<< SM_COUNT, ceil((float)h1_size / SM_COUNT)>>>(h1_size, dB_h1, -learning_rate);
 
 
           // add to previous parameters
@@ -1052,22 +1122,16 @@ int main(void)
         matAdd <<< SM_COUNT, ceil((float)h1_size / SM_COUNT)>>>(h1_size, B_h1, dB_h1, B_h1);
 
 
-          // RESET INTERMEDIATE MEMORY TO ZEROs (already do this within matMul, but need to reset unique Weight derivs for conv layers)
+        // RESET INTERMEDIATE MEMORY TO ZEROs (already do this within matMul, but need to reset unique Weight derivs for conv layers)
         setZero <<< SM_COUNT, ceil((float)W_h2_size / SM_COUNT) >>> (W_h2_size, dW_h2);
         setZero <<< SM_COUNT, ceil((float)W_h1_size / SM_COUNT) >>> (W_h1_size, dW_h1);
 
     }
+    printf("Avg Loss: %f\n", (float) totalLoss / training_n);
+    printf("Accuracy: %f\n", (float) 1 - (n_wrong / training_n));
   }
 
-
-
-
-
-
-
   cudaEventRecord(gpu_stop);
-
-
 
   // output weights and biases to cpu
 
@@ -1107,18 +1171,18 @@ int main(void)
   FILE * model_file = fopen(model_path, "wb+");
 
   // write out weights
-  fwrite(W_h1_host, sizeof(float), W_h1_size, model_file);
-  fwrite(W_h1_full_host, sizeof(float), W_h1_full_size, model_file);  
-  fwrite(W_h2_host, sizeof(float), W_h2_size, model_file);
-  fwrite(W_h2_full_host, sizeof(float), W_h2_full_size, model_file);
-  fwrite(W_h3_host, sizeof(float), W_h3_size, model_file);
-  fwrite(W_out_host, sizeof(float), W_out_size, model_file);
+  fwrite(W_h1_host, sizeof(float), (size_t) W_h1_size, model_file);
+  fwrite(W_h1_full_host, sizeof(float), (size_t) W_h1_full_size, model_file);  
+  fwrite(W_h2_host, sizeof(float), (size_t) W_h2_size, model_file);
+  fwrite(W_h2_full_host, sizeof(float), (size_t) W_h2_full_size, model_file);
+  fwrite(W_h3_host, sizeof(float), (size_t) W_h3_size, model_file);
+  fwrite(W_out_host, sizeof(float), (size_t) W_out_size, model_file);
 
   // write out biases
-  fwrite(B_h1_host, sizeof(float), h1_size, model_file);
-  fwrite(B_h2_host, sizeof(float), h2_size, model_file);
-  fwrite(B_h3_host, sizeof(float), h3_size, model_file);
-  fwrite(B_out_host, sizeof(float), output_len, model_file);
+  fwrite(B_h1_host, sizeof(float), (size_t) h1_size, model_file);
+  fwrite(B_h2_host, sizeof(float), (size_t) h2_size, model_file);
+  fwrite(B_h3_host, sizeof(float), (size_t) h3_size, model_file);
+  fwrite(B_out_host, sizeof(float), (size_t) output_len, model_file);
 
   fclose(model_file);
 
@@ -1200,6 +1264,7 @@ int main(void)
 
   // free space for storing loss values per batch
   cudaFree(loss);
+  cudaFree(predicted);
   
   /*
   
@@ -1215,6 +1280,12 @@ int main(void)
   printf("CPU Elapsed Millis: %f\n", cpu_millis);
   
   */
+
+
+  free(training_labels_raw);
+
+  free(training_images);
+  free(training_labels);
 
   free(X_in_host);
   free(Y_out_host);
@@ -1252,4 +1323,5 @@ int main(void)
   free(B_out_host);
 
   free(loss_host);
+  free(predicted_host);
 }
