@@ -330,7 +330,24 @@ int main(void)
   int batch_size = 1;
   // how many times to repeat dataset
   int repeat_n = 23;
-  float learning_rate = .001;
+  float learning_rate_sched[23];
+  for (int i = 0; i < 23; i++){
+    if (i < 2){
+      learning_rate_sched[i] = .0005;
+    }
+    else if (i < 4){
+      learning_rate_sched[i] = .001;
+    }
+    else if (i < 10){
+      learning_rate_sched[i] = .0001;
+    }
+    else if (i < 18){
+      learning_rate_sched[i] = .00001;
+    }
+    else{
+      learning_rate_sched[i] = .00005;
+    }
+  }
 
   int input_len = 257;
   int output_len = 10;
@@ -1098,7 +1115,7 @@ int main(void)
 
 
           // UPDATE WEIGHTS + BIASES (apply learning rate and add gradients to existing params)
-
+        float learning_rate = learning_rate_sched[cnt];
           // apply learning rate to gradients, and reverse direction
         matScale <<< SM_COUNT, ceil((float)W_out_size / SM_COUNT)>>>(W_out_size, dW_out, -learning_rate);
         matScale <<< SM_COUNT, ceil((float)W_h3_size / SM_COUNT)>>>(W_h3_size, dW_h3, -learning_rate);
