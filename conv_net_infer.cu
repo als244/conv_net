@@ -94,11 +94,14 @@ __global__  void addBiasAndActivate(int size, int width, float *X, float *B){
   int i = blockDim.x * blockIdx.x + threadIdx.x;
   int rowInd = i / width;
   int colInd = i % width;
+
   float z;
   if (i < size){
     X[width * rowInd + colInd] += B[rowInd];
-    z = X[width * rowInd + colInd];
-    X[width * rowInd + colInd] = (__expf(z) - __expf(-z)) / (__expf(z) + __expf(-z));
+    float TANH_FREQ = 2.0 / 3.0;
+    float TANH_AMP = 1.7159;
+    z = TANH_FREQ * X[width * rowInd + colInd];
+    X[width * rowInd + colInd] = TANH_AMP * (__expf(z) - __expf(-z)) / (__expf(z) + __expf(-z));
   }
 }
 
@@ -410,7 +413,7 @@ int main(void)
   	float totalLoss = 0;
   	for (int batch_i = 0; batch_i < n_batches; batch_i++) {
 
-  		printf("\n\nBatch: %d\n\n", batch_i);
+  		//printf("\n\nBatch: %d\n\n", batch_i);
 
   		// ENSURE GPU MEM (X_in, Y_out) contain each sample as columns 
   		// (X_in has minibatch column with input_len rows, Y_out has minibatch columns with output_len rows)
@@ -478,26 +481,26 @@ int main(void)
         }
 
 
-        printf("\n\nX OUT MATRIX:\n\n");
-        for (int i = 0; i < output_len * batch_size; i++){
-        	if ((i % batch_size) == 0) {
-            	printf("\n");
-            }
-            printf("%f ", X_out_host[i]);
-        }
+        // printf("\n\nX OUT MATRIX:\n\n");
+        // for (int i = 0; i < output_len * batch_size; i++){
+        // 	if ((i % batch_size) == 0) {
+        //     	printf("\n");
+        //     }
+        //     printf("%f ", X_out_host[i]);
+        // }
 
 
-        printf("\n\nY OUT MATRIX:\n\n");
-        for (int i = 0; i < output_len * batch_size; i++){
-        	if ((i % batch_size) == 0) {
-        		printf("\n");
-            }
-            printf("%f ", Y_out_host[i]);
-        }
+        // printf("\n\nY OUT MATRIX:\n\n");
+        // for (int i = 0; i < output_len * batch_size; i++){
+        // 	if ((i % batch_size) == 0) {
+        // 		printf("\n");
+        //     }
+        //     printf("%f ", Y_out_host[i]);
+        //	}
   	}
   	float error_rate = (float) n_wrong / (float) test_n;
   	
-  	printf("Test MSE Avg: %d\n", totalLoss / (float) test_n);
+  	printf("Test MSE Avg: %f\n", totalLoss / (float) test_n);
   	printf("Accuracy: %f\n", 1 - error_rate);
 
 
